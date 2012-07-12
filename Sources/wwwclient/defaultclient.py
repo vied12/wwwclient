@@ -133,8 +133,6 @@ class HTTPClient(client.HTTPClient):
 				else:
 					time.sleep(self.DEFAULT_RETRIES[i])
 			else:
-				if self._http: self._http.close()
-				self._http = None
 				break
 		if response.version == 10: res = "HTTP/1.0 "
 		else: res = "HTTP/1.1 "
@@ -142,6 +140,8 @@ class HTTPClient(client.HTTPClient):
 		res += str(response.reason) + client.CRLF
 		res += str(response.msg) + client.CRLF
 		res += response.read()
+		if self._http: self._http.close()
+		self._http = None
 		return res
 
 	def _finaliseRequest( self, response, url, method ):
