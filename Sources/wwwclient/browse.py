@@ -16,7 +16,7 @@
 # TODO: Add   sessoin.status, session.headers, session.links(), session.scrape()
 # TODO: Add   session.select() to select a form before submit
 
-import urlparse, urllib, mimetypes, re, os, sys, time, json, random, hashlib, httplib
+import urlparse, urllib, mimetypes, re, os, sys, time, json, random, hashlib, httplib, socket
 from   wwwclient import client, defaultclient, scrape, agents
 
 HTTP               = "http"
@@ -315,6 +315,7 @@ class Transaction:
 		self._cookies    = Pairs()
 		self._newCookies = None
 		self._done       = False
+		self._timedout   = False
 		self._responses  = []
 
 	def session( self ):
@@ -399,24 +400,28 @@ class Transaction:
 		request.cookies().merge(self.session().cookies())
 		# As well as this transaction cookies
 		request.cookies().merge(self.cookies())
-		# We send the request as a GET
-		if request.method() == GET:
-			responses = self._client.GET(
-				request.url(),
-				headers=request.headers().asHeaders()
-			)
-		# Or as a POST
-		elif request.method() == POST:
-			responses = self._client.POST(
-				request.url(),
-				data=request.data(),
-				attach=request.attachments(),
-				fields=request.fields().asFields(),
-				headers=request.headers().asHeaders()
-			)
-		# The method may be unsupported
-		else:
-			raise Exception("Unsupported method:", request.method())
+		try:
+			# We send the request as a GET
+			if request.method() == GET:
+				responses = self._client.GET(
+					request.url(),
+					headers=request.headers().asHeaders()
+				)
+			# Or as a POST
+			elif request.method() == POST:
+				responses = self._client.POST(
+					request.url(),
+					data=request.data(),
+					attach=request.attachments(),
+					fields=request.fields().asFields(),
+					headers=request.headers().asHeaders()
+				)
+			# The method may be unsupported
+			else:
+				raise Exception("Unsupported method:", request.method())
+		except socket.timeout, e:
+			self._timedout = True
+			return None
 		# We merge the new cookies if necessary
 		self._status     = self._client.status()
 		self._newCookies = Pairs(self._client.newCookies())
@@ -427,6 +432,14 @@ class Transaction:
 	def done( self ):
 		"""Tells if the transaction is done/complete."""
 		return self._done
+
+	def hasTimedOut ( self ):
+		"""Tells if the transaction is timed out"""
+		return self._timedout
+
+	def retry ( self ):
+		"""Retry the transaction"""
+		return self.do()
 
 	# SCRAPING ________________________________________________________________
 	def asTree( self ):
@@ -539,6 +552,10 @@ class Session:
 
 	def cookies( self ):
 		return self._cookies
+
+	def retry ( self ):
+		"""rety the last transaction"""
+		return self.last().retry()
 
 	def last( self ):
 		"""Returns the last transaction of the session, or None if there is not

@@ -12,14 +12,15 @@
 # Last mod  : 09-Jul-2012
 # -----------------------------------------------------------------------------
 
-import httplib, urlparse, client
+import httplib, urlparse, client, socket, time
 
 # TODO: Add retry support
 class HTTPClient(client.HTTPClient):
 	"""Sends and manages HTTP requests using the 'httplib' and 'urlparse'
 	modules. Using the 'curlclient' may be more efficient than using this one."""
 
-	TIMEOUT = 10
+	TIMEOUT         = 10
+	DEFAULT_RETRIES = [1,2,3,4,5]
 
 	def __init__( self, encoding="latin-1" ):
 		client.HTTPClient.__init__(self, encoding)
@@ -120,21 +121,28 @@ class HTTPClient(client.HTTPClient):
 		return request
 
 	def _performRequest( self, counter=0 ):
-		try:
-			response = self._http.getresponse()
-			if response.version == 10: res = "HTTP/1.0 "
-			else: res = "HTTP/1.1 "
-			res += str(response.status) + " "
-			res += str(response.reason) + client.CRLF
-			res += str(response.msg) + client.CRLF
-			res += response.read()
-			if self._http: self._http.close()
-			self._http = None
-			return res
-		except Exception, e:
-			if self._http: self._http.close()
-			self._http = None
-			raise e
+		response = None
+		for i in range(len(self.DEFAULT_RETRIES) + 1):
+			try:
+				response = self._http.getresponse()
+			except socket.timeout, e:
+				if i >= len(self.DEFAULT_RETRIES):
+					if self._http: self._http.close()
+					self._http = None
+					raise e
+				else:
+					time.sleep(self.DEFAULT_RETRIES[i])
+			else:
+				if self._http: self._http.close()
+				self._http = None
+				break
+		if response.version == 10: res = "HTTP/1.0 "
+		else: res = "HTTP/1.1 "
+		res += str(response.status) + " "
+		res += str(response.reason) + client.CRLF
+		res += str(response.msg) + client.CRLF
+		res += response.read()
+		return res
 
 	def _finaliseRequest( self, response, url, method ):
 		self._url    = self._absoluteURL(url)

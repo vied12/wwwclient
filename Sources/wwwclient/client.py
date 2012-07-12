@@ -199,7 +199,7 @@ class HTTPClient:
 		file, but if the type is @CONTENT_ATTACHMENT, the value is expected to
 		be a triple (filename, mimetype, value).
 		"""
-		raise Exception("GET method must be implemented by HTTPClient subclasses.")
+		raise Exception("POST method must be implemented by HTTPClient subclasses.")
 	
 	def _ensureAttachment( self, attach ):
 		"""Ensures that the given attachment is a list of attachments. For
