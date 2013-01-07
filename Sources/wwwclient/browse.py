@@ -16,7 +16,7 @@
 # TODO: Add   sessoin.status, session.headers, session.links(), session.scrape()
 # TODO: Add   session.select() to select a form before submit
 
-import urlparse, urllib, mimetypes, re, os, sys, time, json, random, hashlib, httplib
+import urlparse, urllib, mimetypes, re, os, sys, time, json, random, hashlib, httplib, socket
 from   wwwclient import client, defaultclient, scrape, agents
 
 HTTP               = "http"
@@ -315,6 +315,7 @@ class Transaction:
 		self._cookies    = Pairs()
 		self._newCookies = None
 		self._done       = False
+		self._timedout   = False
 		self._responses  = []
 
 	def session( self ):
@@ -399,24 +400,28 @@ class Transaction:
 		request.cookies().merge(self.session().cookies())
 		# As well as this transaction cookies
 		request.cookies().merge(self.cookies())
-		# We send the request as a GET
-		if request.method() == GET:
-			responses = self._client.GET(
-				request.url(),
-				headers=request.headers().asHeaders()
-			)
-		# Or as a POST
-		elif request.method() == POST:
-			responses = self._client.POST(
-				request.url(),
-				data=request.data(),
-				attach=request.attachments(),
-				fields=request.fields().asFields(),
-				headers=request.headers().asHeaders()
-			)
-		# The method may be unsupported
-		else:
-			raise Exception("Unsupported method:", request.method())
+		try:
+			# We send the request as a GET
+			if request.method() == GET:
+				responses = self._client.GET(
+					request.url(),
+					headers=request.headers().asHeaders()
+				)
+			# Or as a POST
+			elif request.method() == POST:
+				responses = self._client.POST(
+					request.url(),
+					data=request.data(),
+					attach=request.attachments(),
+					fields=request.fields().asFields(),
+					headers=request.headers().asHeaders()
+				)
+			# The method may be unsupported
+			else:
+				raise Exception("Unsupported method:", request.method())
+		except socket.timeout, e:
+			self._timedout = True
+			return None
 		# We merge the new cookies if necessary
 		self._status     = self._client.status()
 		self._newCookies = Pairs(self._client.newCookies())
@@ -427,6 +432,14 @@ class Transaction:
 	def done( self ):
 		"""Tells if the transaction is done/complete."""
 		return self._done
+
+	def hasTimedOut ( self ):
+		"""Tells if the transaction is timed out"""
+		return self._timedout
+
+	def retry ( self ):
+		"""Retry the transaction"""
+		return self.do()
 
 	# SCRAPING ________________________________________________________________
 	def asTree( self ):
@@ -540,6 +553,10 @@ class Session:
 	def cookies( self ):
 		return self._cookies
 
+	def retry ( self ):
+		"""rety the last transaction"""
+		return self.last().retry()
+
 	def last( self ):
 		"""Returns the last transaction of the session, or None if there is not
 		transaction in the session."""
@@ -626,69 +643,31 @@ class Session:
 		else:
 			self._referer = value
 
-	def get( self, url="/", params=None, headers=None, follow=None, do=None, cookies=None, retry=[]):
-		"""Gets the page at the given URL, with the optional params (as a `Pair`
-		instance), with the given headers.
+	def get(self, url="/", params=None, headers=None, follow=None, do=None, cookies=None, retry=[]):
+		return self.request(method=GET, url=url, params=params, headers=headers, follow=follow, do=do, cookies=cookies, retry=retry)
 
+	def post(self, url, params=None, data=None, mimetype=None,	fields=None, attach=None, headers=None, 
+		follow=None, do=None, cookies=None, retry=[]):
+		return self.request(method=POST, url=url, params=params, data=data, mimetype=mimetype, fields=fields, attach=attach, headers=headers, 
+			follow=follow, do=do, cookies=cookies, retry=retry)
+
+	def head(self, url="/", params=None, headers=None, follow=None, do=None, cookies=None, retry=[]):
+		return self.request(method=HEAD, url=url, params=params, headers=headers, follow=follow, do=do, cookies=cookies, retry=retry)
+
+	def request(self, method, url, params=None, headers=None, follow=None, do=None, cookies=None, retry=None, data=None, mimetype=None, fields=None, attach=None):
+		"""Gets the page at the given URL, with the optional params (as a `Pair`
+		instance), with the given headers and via the given method.
 		The `follow` and `do` options tell if redirects should be followed and
 		if the request should be sent right away.
-
 		This returns a `Transaction` object, which is `done` if the `do`
 		parameter is true."""
 		if follow is None: follow = self._follow
 		if do is None: do = self._do
 		# TODO: Return data instead of session
 		url = self.__processURL(url)
-		request     = self._createRequest( url=url, params=params, headers=headers, cookies=cookies )
-		transaction = Transaction( self, request )
-		self.__addTransaction(transaction)
-		if do:
-			# We do the transaction
-			# set a delay to do the transaction if _delay is specified
-			if self._delay: time.sleep(random.uniform(*self._delay))
-			# ensure that transaction.do retries after a fail
-			retry = retry or self.DEFAULT_RETRIES
-			for i,r in enumerate(retry):
-				try:
-					transaction.do()
-					break
-				except httplib.IncompleteRead, e:
-					if i >= len(retry):
-						raise e
-					else:
-						time.sleep(r)
-			if self.MERGE_COOKIES: self._cookies.merge(transaction.newCookies())
-			visited = [url]
-			while transaction.redirect() and follow:
-				redirect_url = self.__processURL(transaction.redirect(), store=False)
-				if not (redirect_url in visited):
-					visited.append(redirect_url)
-					transaction = self.get(redirect_url, headers=headers, cookies=cookies, do=True)
-				else:
-					break
-		return transaction
-
-	def post( self, url=None, params=None, data=None, mimetype=None,
-	fields=None, attach=None, headers=None, follow=None, do=None, cookies=None, retry=[]):
-		"""Posts data to the given URL. The optional `params` (`Pairs`) or `data`
-		contain the posted data. The `mimetype` describes the mimetype of the data
-		(if it is a special kind of data). The `fields` is a `Pairs` instance of
-		values to be encoded within the body. The `attach` may contain some
-		attachements created before using the `attach()` method.
-		
-		You should have a look at the `wwwclient.client` module for more
-		information on how the parameters are processed.
-		
-		As always, this returns a new `Transaction` instance."""
-		if follow is None: follow = self._follow
-		if do is None: do = self._do
-		url = self.__processURL(url)
 		if params != None and not isinstance(params, Pairs):
 			params = Pairs(params)
-		request     = self._createRequest(
-			method=POST, url=url, fields=fields, params=params, attach=attach,
-			data=data, mimetype=mimetype, headers=headers, cookies=cookies
-		)
+		request = self._createRequest(method=method, url=url, fields=fields, params=params, attach=attach, data=data, mimetype=mimetype, headers=headers, cookies=cookies)
 		transaction = Transaction( self, request )
 		self.__addTransaction(transaction)
 		if do:
@@ -707,13 +686,12 @@ class Session:
 					else:
 						time.sleep(r)
 			if self.MERGE_COOKIES: self._cookies.merge(transaction.newCookies())
-			# And follow the redirect if any
 			visited = [url]
 			while transaction.redirect() and follow:
 				redirect_url = self.__processURL(transaction.redirect(), store=False)
 				if not (redirect_url in visited):
 					visited.append(redirect_url)
-					transaction = self.post(redirect_url, data=data, mimetype=mimetype, fields=fields, attach=attach, headers=headers, cookies=cookies, do=True)
+					transaction = self.request(method=method, url=redirect_url, headers=headers, do=True, cookies=cookies, data=data, mimetype=mimetype, fields=fields, attach=attach)
 				else:
 					break
 		return transaction
